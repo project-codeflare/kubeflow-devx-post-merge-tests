@@ -8,7 +8,7 @@ jobs:
   run-notebook-test:
     # 🚨 UPDATE 5: Replace 'ubuntu-latest' with your custom runner label if needed. 
     # If testing on standard GitHub runners, use 'ubuntu-latest'.
-    runs-on: kubeflow-devx-testing 
+    runs-on: ubuntu-latest 
     permissions:
       contents: write # Needed to upload the executed notebook artifact
     
