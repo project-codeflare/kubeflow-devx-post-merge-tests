@@ -1,0 +1,163 @@
+name: SDK PR Notebook E2E Runner
+
+on:
+  repository_dispatch:
+    types: [run-sdk-pr-e2e-tests]
+
+jobs:
+  run-notebook-test:
+    runs-on: kubeflow-devx-testing 
+    permissions:
+      contents: write 
+    
+    steps:
+      - name: Checkout SDK PR Code
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.client_payload.sdk_repo }}
+          ref: ${{ github.event.client_payload.sdk_sha }}
+          path: sdk-repo # Checkout the SDK code into a subdirectory
+
+      - name: Checkout Trainer Repo (Test Asset)
+        uses: actions/checkout@v4
+        with:
+          repository: opendatahub-io/trainer
+          ref: main
+          path: trainer-repo # Checkout the Trainer code into a subdirectory
+
+      # Kubernetes Cluster Setup
+      # This step may not be needed with the larger runner
+      - name: Free up disk space
+        run: |
+          echo "Available disk space before cleanup:"
+          df -h
+
+          # Remove unnecessary packages and files to free up space
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+
+          # Clean up Docker
+          docker system prune -af
+
+          echo "Available disk space after cleanup:"
+          df -h
+
+      - name: Set up Kind Kubernetes Cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: kubeflow-test
+          wait: 300s
+
+      - name: Verify Kind Cluster
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
+          kubectl get pods -A
+
+      - name: Install Kubeflow Trainer
+        run: |
+          echo "Installing Kubeflow Trainer..."
+          # Install the Trainer manager using kubectl with server-side apply to handle large CRDs
+          kubectl apply --server-side -k "github.com/opendatahub-io/trainer/manifests/overlays/manager?ref=master"
+
+          # Wait for the trainer deployment to be ready
+          echo "Waiting for Trainer controller to be ready..."
+          kubectl wait --for=condition=available --timeout=300s \
+            deployment/kubeflow-trainer-controller-manager -n kubeflow-system
+
+          # Wait a bit more for webhooks to be fully ready
+          echo "Waiting for webhooks to be ready..."
+          sleep 30
+
+          # Install the default training runtimes
+          echo "Installing Trainer runtimes..."
+          kubectl apply --server-side -k "github.com/opendatahub-io/trainer/manifests/overlays/runtimes?ref=master"
+
+          # Verify installation
+          echo "Verifying Trainer installation..."
+          kubectl get deployment -n kubeflow-system
+          kubectl get pods -n kubeflow-system
+
+          # Verify runtimes are installed
+          echo "Verifying ClusterTrainingRuntimes..."
+          kubectl get clustertrainingruntimes
+
+      # Test Environment Setup 
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.9'
+
+      - name: Setup Environment and Install Dependencies
+        shell: bash
+        run: |
+          echo "Installing tools and dependencies..."
+          
+          # 1. Install Papermill and core execution tools
+          pip install papermill==2.6.0 jupyter==1.1.1 ipykernel==6.29.5
+          
+          # 2. Install main dependencies (Manually listed from pyproject.toml [project.dependencies])
+          echo "Installing main SDK dependencies..."
+          pip install kubernetes>=27.2.0 pydantic>=2.10.0 kubeflow-trainer-api>=2.0.0 kubeflow-katib-api>=0.19.0
+
+          # 3. Install the SDK Code itself in editable mode
+          cd sdk-repo
+          echo "Installing SDK PR code in editable mode..."
+          pip install -e .[dev] 
+          
+          # 4. Configure Notebook Kernel
+          PYTHON_BIN=$(which python)
+          $PYTHON_BIN -m ipykernel install --user --name=sdk-test-kernel --display-name "Python (SDK Test)"
+          
+          cd ..
+          mkdir -p artifacts/notebooks # Create artifact directory
+
+      - name: Configure Kubernetes Access
+        run: |
+          # Ensure kubeconfig is accessible
+          mkdir -p ~/.kube
+          kind get kubeconfig --name kubeflow-test > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+          # Verify access
+          kubectl get nodes
+          kubectl get namespaces
+
+      - name: Run E2E Notebook Test with Papermill
+        id: run-test
+        run: |
+          # Use the python executable where Papermill was installed
+          PAPERMILL_BIN=$(which papermill)
+          echo "Using Papermill from: $PAPERMILL_BIN"
+
+          # Set the notebook paths
+          NOTEBOOK_INPUT="trainer-repo/examples/pytorch/image-classification/mnist.ipynb"
+          NOTEBOOK_OUTPUT="artifacts/notebooks/sdk-pr-test-output.ipynb" 
+
+          echo "Executing notebook: $NOTEBOOK_INPUT"
+
+          # Ensure the output directory exists
+          mkdir -p "$(dirname "$NOTEBOOK_OUTPUT")"
+
+          # Execute the notebook using Papermill 
+          $PAPERMILL_BIN "$NOTEBOOK_INPUT" "$NOTEBOOK_OUTPUT" \
+            --kernel "sdk-test-kernel" \
+            --log-output \
+            --log-level INFO
+
+          echo "Notebook test execution finished successfully."
+
+      - name: Upload Executed Notebook Artifact
+        uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: sdk-pr-notebook-result-${{ github.event.client_payload.sdk_sha }}
+          path: artifacts/notebooks/sdk-pr-test-output.ipynb
+          retention-days: 1
+
+      - name: Cleanup Kind Cluster
+        if: always()
+        run: |
+          kind delete cluster --name kubeflow-test || true
