@@ -26,24 +26,6 @@ jobs:
           path: trainer-repo # Checkout the Trainer code into a subdirectory
 
       # Kubernetes Cluster Setup
-      # This step may not be needed with the larger runner
-      - name: Free up disk space
-        run: |
-          echo "Available disk space before cleanup:"
-          df -h
-
-          # Remove unnecessary packages and files to free up space
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-
-          # Clean up Docker
-          docker system prune -af
-
-          echo "Available disk space after cleanup:"
-          df -h
-
       - name: Set up Kind Kubernetes Cluster
         uses: helm/kind-action@v1
         with:
