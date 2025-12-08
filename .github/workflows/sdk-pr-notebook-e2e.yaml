@@ -42,7 +42,7 @@ jobs:
         run: |
           echo "Installing Kubeflow Trainer..."
           # Install the Trainer manager using kubectl with server-side apply to handle large CRDs
-          kubectl apply --server-side -k "github.com/opendatahub-io/trainer/manifests/overlays/manager?ref=master"
+          kubectl apply --server-side -k "github.com/opendatahub-io/trainer/manifests/overlays/manager?ref=main"
 
           # Wait for the trainer deployment to be ready
           echo "Waiting for Trainer controller to be ready..."
@@ -55,7 +55,7 @@ jobs:
 
           # Install the default training runtimes
           echo "Installing Trainer runtimes..."
-          kubectl apply --server-side -k "github.com/opendatahub-io/trainer/manifests/overlays/runtimes?ref=master"
+          kubectl apply --server-side -k "github.com/opendatahub-io/trainer/manifests/overlays/runtimes?ref=main"
 
           # Verify installation
           echo "Verifying Trainer installation..."
